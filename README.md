@@ -20,6 +20,13 @@ Current workflow targets:
 
 Currently macOS-focused; cross-platform support would require replacing `sips` and AppleScript integration.
 
+## Requirements
+
+- Python 3.10 or newer
+- macOS
+- Adobe Illustrator installed locally
+- `sips` available on the system
+
 ## Install
 
 ### From a local checkout
@@ -30,10 +37,8 @@ pip install -e .
 
 ### From GitHub
 
-After you publish this repository:
-
 ```bash
-pip install git+https://github.com/<your-user-or-org>/paneljet.git
+pip install git+https://github.com/alexpengyl1/paneljet.git
 ```
 
 ## Quick start
