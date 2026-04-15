@@ -52,7 +52,7 @@ paneljet \
   --layout-mode smart \
   --name Figure3_layout \
   --ai-width-mm 260 \
-  --ai-height-mm 180 \
+  --auto-height \
   --run-illustrator
 ```
 
@@ -87,12 +87,25 @@ paneljet \
   --files "A=plot1.pdf,B=plot2.pdf,C=plot3.pdf,D=plot4.pdf" \
   --layout 2,2 \
   --name Figure2_layout \
-  --ai-width-mm 240 \
-  --ai-height-mm 160 \
+  --ai-width-mm 240 --ai-height-mm 160 \
   --run-illustrator
 ```
 
-### 3. Use a text file for order
+### 3. Keep width fixed and shrink extra vertical whitespace
+
+This is useful for manuscript figures where panel widths should stay consistent, but the artboard should not keep large top and bottom blank areas.
+
+```bash
+paneljet \
+  /path/to/figure_folder \
+  --order-mode smart \
+  --layout-mode smart \
+  --ai-width-mm 210 \
+  --auto-height \
+  --run-illustrator
+```
+
+### 4. Use a text file for order
 
 Create `order.txt`:
 
@@ -157,6 +170,9 @@ Example natural-language intents:
 - `--artboard-size A4|A3|letter|WxH`
 - `--landscape`
 - `--ai-width-mm 260 --ai-height-mm 180`
+- `--ai-width-mm 210 --auto-height`
+
+`--auto-height` keeps the chosen artboard width and automatically shrinks the artboard height to fit the packed panels with more appropriate top and bottom whitespace.
 
 ### Labels and spacing
 
@@ -169,6 +185,7 @@ Example natural-language intents:
 
 - `--dry-run`
 - `--run-illustrator`
+- `--auto-height`
 - `--illustrator-app NAME`
 
 Usually you can just use `--run-illustrator` and let PanelJet detect the AppleScript app name automatically.

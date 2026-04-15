@@ -249,13 +249,61 @@ def balanced_layout(count: int) -> list[int]:
     return rows
 
 
+def candidate_layouts(count: int, max_row_size: int) -> list[list[int]]:
+    if count <= 0:
+        return []
+
+    layouts: list[list[int]] = []
+
+    def build(remaining: int, limit: int, current: list[int]) -> None:
+        if remaining == 0:
+            layouts.append(list(current))
+            return
+        upper = min(remaining, limit, max_row_size)
+        for size in range(upper, 0, -1):
+            current.append(size)
+            build(remaining - size, size, current)
+            current.pop()
+
+    build(count, count, [])
+    return layouts
+
+
+def portrait_layout_score(figures: Sequence[FigureSpec], layout: Sequence[int]) -> float:
+    rows = chunked(figures, layout)
+    width_units = max(layout)
+    height_units = sum(max(1.0 / figure.aspect_ratio for figure in row) for row in rows)
+    layout_aspect = width_units / height_units
+    target_aspect = 210.0 / 297.0
+    single_panel_penalty = 0.12 * sum(1 for size in layout if size == 1)
+    extra_row_penalty = 0.03 * max(0, len(layout) - 1)
+    return abs(layout_aspect - target_aspect) + single_panel_penalty + extra_row_penalty
+
+
+def improve_incomplete_layout(figures: Sequence[FigureSpec], layout: Sequence[int]) -> list[int]:
+    if len(layout) <= 1 or layout[-1] == max(layout):
+        return list(layout)
+
+    best_layout = list(layout)
+    best_score = portrait_layout_score(figures, layout)
+    max_row_size = max(layout)
+    for candidate in candidate_layouts(len(figures), max_row_size):
+        if candidate == list(layout):
+            continue
+        candidate_score = portrait_layout_score(figures, candidate)
+        if candidate_score + 0.05 < best_score:
+            best_layout = candidate
+            best_score = candidate_score
+    return best_layout
+
+
 def smart_layout(figures: Sequence[FigureSpec]) -> list[int]:
     standard_count = sum(1 for figure in figures if figure.shape == "standard")
     tall_count = sum(1 for figure in figures if figure.shape == "tall")
     wide_count = sum(1 for figure in figures if figure.shape == "wide")
     shape_types = sum(1 for count in (standard_count, tall_count, wide_count) if count > 0)
     if shape_types <= 1:
-        return balanced_layout(len(figures))
+        return improve_incomplete_layout(figures, balanced_layout(len(figures)))
 
     rows: list[int] = []
     remaining_standard = standard_count
@@ -277,7 +325,7 @@ def smart_layout(figures: Sequence[FigureSpec]) -> list[int]:
 
     if sum(rows) != len(figures):
         raise ValueError("Internal error while building smart layout.")
-    return rows
+    return improve_incomplete_layout(figures, rows)
 
 
 def parse_layout(raw: str | None, count: int, mode: str, figures: Sequence[FigureSpec]) -> list[int]:
@@ -313,6 +361,41 @@ def js_string(value: str) -> str:
     )
 
 
+def compute_uniform_row_metrics(
+    figures: Sequence[FigureSpec],
+    layout: Sequence[int],
+    artboard_width: float,
+    margin: float,
+    gap: float,
+) -> tuple[float, list[float], list[list[FigureSpec]]]:
+    rows = chunked(figures, layout)
+    inner_width = artboard_width - (2 * margin)
+    max_cols = max(layout)
+    if inner_width <= 0:
+        raise ValueError("Margin and gap leave no usable artboard space.")
+    base_cell_width = (inner_width - (gap * (max_cols - 1))) / max_cols
+    if base_cell_width <= 0:
+        raise ValueError("Margin and gap leave no usable artboard space.")
+
+    row_heights = [
+        max(base_cell_width / figure.aspect_ratio for figure in row_figures)
+        for row_figures in rows
+    ]
+    return base_cell_width, row_heights, rows
+
+
+def auto_height_for_layout(
+    figures: Sequence[FigureSpec],
+    layout: Sequence[int],
+    artboard_width: float,
+    margin: float,
+    gap: float,
+) -> float:
+    _, row_heights, rows = compute_uniform_row_metrics(figures, layout, artboard_width, margin, gap)
+    content_height = sum(row_heights) + (gap * max(0, len(rows) - 1))
+    return content_height + (2 * margin)
+
+
 def generate_jsx(
     figures: Sequence[FigureSpec],
     layout: Sequence[int],
@@ -325,30 +408,50 @@ def generate_jsx(
     document_name: str,
     save_ai: Path | None,
 ) -> str:
-    rows = chunked(figures, layout)
+    base_cell_width, row_heights, rows = compute_uniform_row_metrics(
+        figures, layout, artboard_width, margin, gap
+    )
     row_count = len(rows)
-    inner_width = artboard_width - (2 * margin)
     inner_height = artboard_height - (2 * margin)
-    row_height = (inner_height - (gap * (row_count - 1))) / row_count
-    if row_height <= 0 or inner_width <= 0:
+    inner_width = artboard_width - (2 * margin)
+    available_content_height = inner_height - (gap * (row_count - 1))
+    if available_content_height <= 0:
         raise ValueError("Margin and gap leave no usable artboard space.")
 
+    total_row_height = sum(row_heights)
+    if total_row_height <= 0:
+        raise ValueError("No usable row height could be computed.")
+
+    if total_row_height > available_content_height:
+        scale = available_content_height / total_row_height
+        base_cell_width *= scale
+        row_heights = [height * scale for height in row_heights]
+
+    content_height = sum(row_heights) + (gap * (row_count - 1))
+    content_top = artboard_height - margin - ((inner_height - content_height) / 2.0)
+
     placements: list[dict[str, object]] = []
+    current_top = content_top
     for row_index, row_figures in enumerate(rows):
-        row_top = artboard_height - margin - (row_index * (row_height + gap))
-        cell_width = (inner_width - (gap * (len(row_figures) - 1))) / len(row_figures)
+        row_height = row_heights[row_index]
+        row_width = (base_cell_width * len(row_figures)) + (gap * (len(row_figures) - 1))
+        row_left = margin + ((inner_width - row_width) / 2.0)
         for col_index, figure in enumerate(row_figures):
-            cell_left = margin + (col_index * (cell_width + gap))
+            figure_height = base_cell_width / figure.aspect_ratio
+            if total_row_height > available_content_height:
+                figure_height *= scale
+            cell_left = row_left + (col_index * (base_cell_width + gap))
             placements.append(
                 {
                     "label": figure.label,
                     "file": str(figure.path.resolve()),
                     "cell_left": round(cell_left, 2),
-                    "cell_top": round(row_top, 2),
-                    "cell_width": round(cell_width, 2),
-                    "cell_height": round(row_height, 2),
+                    "cell_top": round(current_top, 2),
+                    "cell_width": round(base_cell_width, 2),
+                    "cell_height": round(figure_height, 2),
                 }
             )
+        current_top -= row_height + gap
 
     placement_lines = []
     for item in placements:
@@ -364,6 +467,8 @@ def generate_jsx(
             )
         )
 
+    placements_block = ",\n".join(placement_lines)
+
     save_block = "var saveAIPath = null;"
     if save_ai:
         save_block = 'var saveAIPath = "%s";' % js_string(str(save_ai.resolve()))
@@ -378,7 +483,7 @@ var addLabels = {"true" if add_labels else "false"};
 {save_block}
 
 var placements = [
-{",\n".join(placement_lines)}
+{placements_block}
 ];
 
 function ensureDocument() {{
@@ -541,6 +646,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gap", type=float, default=16.0, help="Gap between cells in points.")
     parser.add_argument("--label-size", type=float, default=18.0, help="Panel label size in points.")
     parser.add_argument("--no-labels", action="store_true", help="Do not add labels.")
+    parser.add_argument(
+        "--auto-height",
+        action="store_true",
+        help="Keep artboard width fixed and shrink artboard height to fit the packed panels.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print the planned order/layout without writing files.")
     parser.add_argument(
         "--run-illustrator",
@@ -563,8 +673,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"Folder does not exist: {folder}")
     if args.run_illustrator and args.dry_run:
         parser.error("--run-illustrator cannot be used together with --dry-run.")
-    if (args.ai_width_mm is None) != (args.ai_height_mm is None):
-        parser.error("--ai-width-mm and --ai-height-mm must be used together.")
+    if args.ai_height_mm is not None and args.ai_width_mm is None:
+        parser.error("--ai-height-mm requires --ai-width-mm.")
+    if args.ai_width_mm is not None and args.ai_height_mm is None and not args.auto_height:
+        parser.error("--ai-width-mm and --ai-height-mm must be used together unless --auto-height is used.")
+    if args.auto_height and args.ai_height_mm is not None:
+        parser.error("--auto-height cannot be used together with --ai-height-mm.")
     if args.name and ("/" in args.name or "\\" in args.name):
         parser.error("--name should be a base filename, not a path.")
 
@@ -591,6 +705,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         artboard_height = mm_to_pt(args.ai_height_mm)
     else:
         artboard_width, artboard_height = parse_artboard(args.artboard_size, args.landscape)
+        if args.ai_width_mm is not None:
+            artboard_width = mm_to_pt(args.ai_width_mm)
+
+    if args.auto_height:
+        artboard_height = auto_height_for_layout(
+            figures=figures,
+            layout=layout,
+            artboard_width=artboard_width,
+            margin=args.margin,
+            gap=args.gap,
+        )
 
     default_base = args.name if args.name else "paneljet"
     output_jsx = (
