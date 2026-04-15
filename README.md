@@ -169,10 +169,12 @@ Example natural-language intents:
 
 - `--dry-run`
 - `--run-illustrator`
-- `--illustrator-app "Illustrator"`
-- `--illustrator-app "Adobe Illustrator"`
+- `--illustrator-app NAME`
 
-When `--run-illustrator` is used without `--illustrator-app`, PanelJet will try common AppleScript app names automatically and use the first one that works.
+Usually you can just use `--run-illustrator` and let PanelJet detect the AppleScript app name automatically.
+
+If you need to set it manually, use one app name such as:
+`--illustrator-app "Illustrator"`
 
 ## How it works
 
