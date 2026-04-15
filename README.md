@@ -5,6 +5,7 @@
 It is designed for workflows where you want:
 
 - automatic panel packing from a folder of `pdf/png/jpg/tiff`
+- both simple flat panel layouts and grouped composite figure layouts
 - `A/B/C/...` panel labels
 - shape-aware ordering for standard, tall, and wide figures
 - a real Illustrator document you can still tweak by hand
@@ -67,7 +68,16 @@ This writes:
 
 The demo collage above uses the author's two very fluffy ragdoll cats as sample data: Heli (male, 9.5 kg) and Huajuan (female, 4.5 kg).
 
-## Common workflows
+## Layout modes
+
+PanelJet now supports two complementary layout modes:
+
+- `Basic layout`: all input files are treated as one flat list of panels, then packed into rows such as `3,3,3` or `2,2,1`
+- `Composite layout`: panels are first grouped into blocks such as `A`, `B`, and `C`; each group gets its own internal layout, then the groups are packed into an outer layout such as `A,B ; C`
+
+Use basic layout for most standard manuscript figures. Use composite layout when a figure contains sub-figures that should stay together.
+
+## Basic layout
 
 For many SCI-style journal figures, a practical default is `180 mm` width for a double-column figure. As a reference point, Nature’s figure guide uses `89 mm` for single-column and `183 mm` for double-column figures.
 
@@ -139,6 +149,61 @@ paneljet \
   --name Figure2_layout
 ```
 
+## Composite layout
+
+Composite layout is meant for figures that have meaningful grouped sub-figures.
+
+Example target structure:
+
+- group `A`: 4 files laid out as `2,2`
+- group `B`: 1 file laid out as `1`
+- group `C`: 9 files laid out as `3,3,3`
+- outer layout: first row `A,B`, second row `C`
+
+In this mode:
+
+- each group keeps its own internal layout
+- groups in the same outer row are scaled to the same visual height
+- the overall figure can still use `--ai-width-mm` and `--auto-height`
+- the original basic layout mode still works unchanged
+
+Create a layout file such as `composite_layout.txt`:
+
+```text
+[group A]
+files = A1.png,A2.png,A3.png,A4.png
+layout = 2,2
+
+[group B]
+files = B1.png
+layout = 1
+
+[group C]
+files = C1.png,C2.png,C3.png,C4.png,C5.png,C6.png,C7.png,C8.png,C9.png
+layout = 3,3,3
+
+[figure]
+rows = A,B ; C
+```
+
+Then run:
+
+```bash
+paneljet \
+  /path/to/figure_folder \
+  --group-layout-file /path/to/composite_layout.txt \
+  --ai-width-mm 180 \
+  --auto-height \
+  --run-illustrator
+```
+
+Notes for composite layout:
+
+- all files referenced by `--group-layout-file` are resolved relative to the input folder
+- every group listed in the file must appear exactly once in `[figure] rows = ...`
+- `rows = A,B ; C` means first row `A` and `B`, second row `C`
+- groups in the same row are equal-height blocks; their widths are distributed automatically from their internal layout geometry
+
 ## Natural language with Codex and Claude Code
 
 This repository includes both:
@@ -155,6 +220,7 @@ That means the same core tool can be used in three ways:
 Example natural-language intents:
 
 - "Pack this folder into an Illustrator figure and make it 180 mm wide with auto height."
+- "Treat A as a 2 by 2 block, B as a single panel, C as a 3 by 3 block, and place A and B above C."
 - "Arrange these files as A-H and open Illustrator."
 - "Preview the smart layout before generating the AI file."
 
@@ -165,6 +231,7 @@ Example natural-language intents:
 - `folder`: folder containing figure files
 - `--files`: comma-separated explicit order, supports `A=file.pdf,B=file2.pdf`
 - `--files-file`: text file with one filename or `label=filename` per line
+- `--group-layout-file`: grouped composite layout file with `[group NAME]` sections and `[figure] rows = ...`
 
 ### Ordering and layout
 

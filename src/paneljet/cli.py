@@ -40,6 +40,24 @@ class FigureSpec:
         return "standard"
 
 
+@dataclass(frozen=True)
+class PlacementSpec:
+    label: str
+    file: str
+    cell_left: float
+    cell_top: float
+    cell_width: float
+    cell_height: float
+    show_label: bool = True
+
+
+@dataclass(frozen=True)
+class GroupSpec:
+    name: str
+    figures: list[FigureSpec]
+    layout: list[int]
+
+
 def natural_key(value: str) -> list[object]:
     parts = re.split(r"(\d+)", value.lower())
     key: list[object] = []
@@ -171,6 +189,95 @@ def parse_manual_selection(
         seen_paths.add(path)
         parsed.append((label, path))
     return parsed
+
+
+def parse_layout_string(raw: str, expected_count: int | None = None) -> list[int]:
+    rows = [int(part.strip()) for part in raw.split(",") if part.strip()]
+    if not rows:
+        raise ValueError("Layout cannot be empty.")
+    if any(value <= 0 for value in rows):
+        raise ValueError("Layout values must be positive integers.")
+    if expected_count is not None and sum(rows) != expected_count:
+        raise ValueError(f"Layout {raw!r} expects {sum(rows)} panels, but found {expected_count}.")
+    return rows
+
+
+def parse_group_layout_file(folder: Path, file_path: Path) -> tuple[list[GroupSpec], list[list[str]]]:
+    current_section: tuple[str, str] | None = None
+    group_defs: dict[str, dict[str, str]] = {}
+    figure_defs: dict[str, str] = {}
+
+    for line in read_lines_file(file_path):
+        if line.startswith("[") and line.endswith("]"):
+            raw_section = line[1:-1].strip()
+            if raw_section.lower() == "figure":
+                current_section = ("figure", "figure")
+                continue
+            if raw_section.lower().startswith("group "):
+                group_name = raw_section[6:].strip()
+                if not group_name:
+                    raise ValueError("Group section names cannot be empty.")
+                validate_label(group_name)
+                current_section = ("group", group_name)
+                group_defs.setdefault(group_name, {})
+                continue
+            raise ValueError(f"Unsupported section header: {line}")
+
+        if current_section is None:
+            raise ValueError("Layout file must start with a [group NAME] or [figure] section.")
+        if "=" not in line:
+            raise ValueError(f"Expected key=value line, got: {line}")
+        key, value = line.split("=", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if not value:
+            raise ValueError(f"Value cannot be empty for key {key!r}.")
+        if current_section[0] == "group":
+            group_defs[current_section[1]][key] = value
+        else:
+            figure_defs[key] = value
+
+    if not group_defs:
+        raise ValueError("No groups were defined in the group layout file.")
+    rows_spec = figure_defs.get("rows")
+    if not rows_spec:
+        raise ValueError("The [figure] section must define rows = ...")
+
+    groups: list[GroupSpec] = []
+    group_names = set(group_defs)
+    for name, values in group_defs.items():
+        files_value = values.get("files")
+        layout_value = values.get("layout")
+        if not files_value or not layout_value:
+            raise ValueError(f"Group {name} must define both files and layout.")
+        file_names = [part.strip() for part in files_value.split(",") if part.strip()]
+        if not file_names:
+            raise ValueError(f"Group {name} must list at least one file.")
+        items = parse_manual_selection(folder, ",".join(file_names), None)
+        if items is None:
+            raise ValueError(f"Group {name} could not be parsed.")
+        figures = build_figures(items)
+        groups.append(GroupSpec(name=name, figures=figures, layout=parse_layout_string(layout_value, len(figures))))
+
+    outer_rows: list[list[str]] = []
+    seen_groups: set[str] = set()
+    for raw_row in rows_spec.split(";"):
+        row = [part.strip() for part in raw_row.split(",") if part.strip()]
+        if not row:
+            continue
+        for group_name in row:
+            if group_name not in group_names:
+                raise ValueError(f"Outer layout references unknown group {group_name!r}.")
+            if group_name in seen_groups:
+                raise ValueError(f"Group {group_name!r} appears more than once in figure rows.")
+            seen_groups.add(group_name)
+        outer_rows.append(row)
+
+    missing = group_names - seen_groups
+    if missing:
+        raise ValueError(f"Groups missing from figure rows: {', '.join(sorted(missing))}")
+
+    return groups, outer_rows
 
 
 def read_dimensions(path: Path) -> tuple[float, float]:
@@ -384,6 +491,141 @@ def compute_uniform_row_metrics(
     return base_cell_width, row_heights, rows
 
 
+def layout_height_factor(figures: Sequence[FigureSpec], layout: Sequence[int]) -> float:
+    rows = chunked(figures, layout)
+    return sum(max(1.0 / figure.aspect_ratio for figure in row_figures) for row_figures in rows)
+
+
+def group_aspect_ratio(group: GroupSpec, gap: float) -> float:
+    height_factor = layout_height_factor(group.figures, group.layout)
+    cols = max(group.layout)
+    rows = len(group.layout)
+    width = cols + (gap * max(0, cols - 1))
+    height = height_factor + (gap * max(0, rows - 1))
+    if height <= 0:
+        raise ValueError(f"Group {group.name} has invalid geometry.")
+    return width / height
+
+
+def scaled_group_placements(
+    group: GroupSpec,
+    left: float,
+    top: float,
+    block_height: float,
+    gap: float,
+) -> list[PlacementSpec]:
+    rows = chunked(group.figures, group.layout)
+    row_count = len(rows)
+    if row_count <= 0:
+        return []
+    available_content_height = block_height - (gap * max(0, row_count - 1))
+    if available_content_height <= 0:
+        raise ValueError(f"Group {group.name} has no vertical space after gaps.")
+
+    height_factor = layout_height_factor(group.figures, group.layout)
+    cell_width = available_content_height / height_factor
+    row_heights = [
+        max(cell_width / figure.aspect_ratio for figure in row_figures)
+        for row_figures in rows
+    ]
+    max_cols = max(group.layout)
+    total_width = (max_cols * cell_width) + (gap * max(0, max_cols - 1))
+    placements: list[PlacementSpec] = []
+    current_top = top
+    for row_figures, row_height in zip(rows, row_heights):
+        row_width = (len(row_figures) * cell_width) + (gap * max(0, len(row_figures) - 1))
+        row_left = left + ((total_width - row_width) / 2.0)
+        for col_index, figure in enumerate(row_figures):
+            figure_height = cell_width / figure.aspect_ratio
+            cell_left = row_left + (col_index * (cell_width + gap))
+            placements.append(
+                PlacementSpec(
+                    label=figure.label,
+                    file=str(figure.path.resolve()),
+                    cell_left=round(cell_left, 2),
+                    cell_top=round(current_top, 2),
+                    cell_width=round(cell_width, 2),
+                    cell_height=round(figure_height, 2),
+                    show_label=False,
+                )
+            )
+        current_top -= row_height + gap
+    return placements
+
+
+def compute_group_row_heights(
+    groups: Sequence[GroupSpec],
+    outer_rows: Sequence[Sequence[str]],
+    artboard_width: float,
+    margin: float,
+    gap: float,
+) -> tuple[list[float], dict[str, float]]:
+    inner_width = artboard_width - (2 * margin)
+    if inner_width <= 0:
+        raise ValueError("Margin leaves no usable artboard width.")
+    group_map = {group.name: group for group in groups}
+    row_heights: list[float] = []
+    aspects: dict[str, float] = {}
+    for group in groups:
+        aspects[group.name] = group_aspect_ratio(group, gap)
+    for row in outer_rows:
+        aspect_sum = sum(aspects[name] for name in row)
+        available_width = inner_width - (gap * max(0, len(row) - 1))
+        if available_width <= 0:
+            raise ValueError("Gap leaves no usable row width.")
+        row_heights.append(available_width / aspect_sum)
+        for name in row:
+            if name not in group_map:
+                raise ValueError(f"Unknown group in row: {name}")
+    return row_heights, aspects
+
+
+def auto_height_for_groups(
+    groups: Sequence[GroupSpec],
+    outer_rows: Sequence[Sequence[str]],
+    artboard_width: float,
+    margin: float,
+    gap: float,
+) -> float:
+    row_heights, _ = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
+    return sum(row_heights) + (gap * max(0, len(row_heights) - 1)) + (2 * margin)
+
+
+def group_label_placements(
+    groups: Sequence[GroupSpec],
+    outer_rows: Sequence[Sequence[str]],
+    artboard_width: float,
+    artboard_height: float,
+    margin: float,
+    gap: float,
+) -> list[PlacementSpec]:
+    row_heights, aspects = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
+    inner_height = artboard_height - (2 * margin)
+    content_height = sum(row_heights) + (gap * max(0, len(row_heights) - 1))
+    group_map = {group.name: group for group in groups}
+    _ = group_map
+    placements: list[PlacementSpec] = []
+    current_top = artboard_height - margin - ((inner_height - content_height) / 2.0)
+    for row, row_height in zip(outer_rows, row_heights):
+        current_left = margin
+        for group_name in row:
+            group_width = row_height * aspects[group_name]
+            placements.append(
+                PlacementSpec(
+                    label=group_name,
+                    file="",
+                    cell_left=round(current_left, 2),
+                    cell_top=round(current_top, 2),
+                    cell_width=0.0,
+                    cell_height=0.0,
+                    show_label=True,
+                )
+            )
+            current_left += group_width + gap
+        current_top -= row_height + gap
+    return placements
+
+
 def auto_height_for_layout(
     figures: Sequence[FigureSpec],
     layout: Sequence[int],
@@ -538,6 +780,161 @@ main();
 """
 
 
+def render_jsx(
+    placements: Sequence[PlacementSpec],
+    artboard_width: float,
+    artboard_height: float,
+    add_labels: bool,
+    label_size: float,
+    document_name: str,
+    save_ai: Path | None,
+) -> str:
+    placement_lines = []
+    for item in placements:
+        placement_lines.append(
+            "  {label: \"%s\", file: \"%s\", cellLeft: %.2f, cellTop: %.2f, cellWidth: %.2f, cellHeight: %.2f, showLabel: %s}"
+            % (
+                js_string(item.label),
+                js_string(item.file),
+                item.cell_left,
+                item.cell_top,
+                item.cell_width,
+                item.cell_height,
+                "true" if item.show_label else "false",
+            )
+        )
+
+    placements_block = ",\n".join(placement_lines)
+    save_block = "var saveAIPath = null;"
+    if save_ai:
+        save_block = 'var saveAIPath = "%s";' % js_string(str(save_ai.resolve()))
+
+    return f"""#target illustrator
+
+var docWidth = {artboard_width:.2f};
+var docHeight = {artboard_height:.2f};
+var labelSize = {label_size:.2f};
+var documentTitle = "{js_string(document_name)}";
+var addLabels = {"true" if add_labels else "false"};
+{save_block}
+
+var placements = [
+{placements_block}
+];
+
+function ensureDocument() {{
+  var doc = app.documents.add(DocumentColorSpace.RGB, docWidth, docHeight);
+  doc.rulerUnits = RulerUnits.Points;
+  return doc;
+}}
+
+function placeOne(doc, spec) {{
+  if (spec.file) {{
+    var fileRef = new File(spec.file);
+    if (!fileRef.exists) {{
+      throw new Error("Missing file: " + spec.file);
+    }}
+
+    var item = doc.placedItems.add();
+    item.file = fileRef;
+
+    var scaleX = spec.cellWidth / item.width;
+    var scaleY = spec.cellHeight / item.height;
+    var scale = Math.min(scaleX, scaleY) * 100.0;
+    item.resize(scale, scale);
+
+    var left = spec.cellLeft + (spec.cellWidth - item.width) / 2.0;
+    var top = spec.cellTop - (spec.cellHeight - item.height) / 2.0;
+    item.left = left;
+    item.top = top;
+  }}
+
+  if (addLabels && spec.showLabel) {{
+    var label = doc.textFrames.add();
+    label.contents = spec.label;
+    label.left = spec.cellLeft;
+    label.top = spec.cellTop + (labelSize * 0.2);
+    label.textRange.characterAttributes.size = labelSize;
+  }}
+  return null;
+}}
+
+function main() {{
+  var doc = ensureDocument();
+  for (var i = 0; i < placements.length; i++) {{
+    placeOne(doc, placements[i]);
+  }}
+  if (saveAIPath) {{
+    var saveFile = new File(saveAIPath);
+    var options = new IllustratorSaveOptions();
+    doc.saveAs(saveFile, options);
+  }}
+}}
+
+main();
+"""
+
+
+def generate_grouped_jsx(
+    groups: Sequence[GroupSpec],
+    outer_rows: Sequence[Sequence[str]],
+    artboard_width: float,
+    artboard_height: float,
+    margin: float,
+    gap: float,
+    add_labels: bool,
+    label_size: float,
+    document_name: str,
+    save_ai: Path | None,
+) -> str:
+    row_heights, aspects = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
+    inner_height = artboard_height - (2 * margin)
+    content_height = sum(row_heights) + (gap * max(0, len(row_heights) - 1))
+    if content_height > inner_height:
+        raise ValueError("Composite layout does not fit the requested artboard height.")
+
+    group_map = {group.name: group for group in groups}
+    placements: list[PlacementSpec] = []
+    current_top = artboard_height - margin - ((inner_height - content_height) / 2.0)
+    current_left_base = margin
+    for row, row_height in zip(outer_rows, row_heights):
+        current_left = current_left_base
+        for group_name in row:
+            group_width = row_height * aspects[group_name]
+            placements.extend(
+                scaled_group_placements(
+                    group=group_map[group_name],
+                    left=current_left,
+                    top=current_top,
+                    block_height=row_height,
+                    gap=gap,
+                )
+            )
+            current_left += group_width + gap
+        current_top -= row_height + gap
+
+    placements.extend(
+        group_label_placements(
+            groups=groups,
+            outer_rows=outer_rows,
+            artboard_width=artboard_width,
+            artboard_height=artboard_height,
+            margin=margin,
+            gap=gap,
+        )
+    )
+
+    return render_jsx(
+        placements=placements,
+        artboard_width=artboard_width,
+        artboard_height=artboard_height,
+        add_labels=add_labels,
+        label_size=label_size,
+        document_name=document_name,
+        save_ai=save_ai,
+    )
+
+
 def detect_illustrator_app(preferred: str | None) -> str:
     if preferred:
         return preferred
@@ -585,6 +982,25 @@ def print_summary(figures: Sequence[FigureSpec], layout: Sequence[int], mode: st
         print(f"Target AI: {save_ai}")
 
 
+def print_group_summary(
+    groups: Sequence[GroupSpec],
+    outer_rows: Sequence[Sequence[str]],
+    output_jsx: Path,
+    save_ai: Path | None,
+) -> None:
+    print("Groups:")
+    for group in groups:
+        file_summary = ", ".join(figure.path.name for figure in group.figures)
+        print(f"  {group.name}: layout {','.join(str(value) for value in group.layout)} -> {file_summary}")
+    print("Outer rows:")
+    for row in outer_rows:
+        print(f"  {' | '.join(row)}")
+    print("Layout mode: composite")
+    print(f"Generated JSX: {output_jsx}")
+    if save_ai:
+        print(f"Target AI: {save_ai}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="PanelJet: generate Adobe Illustrator JSX that packs a figure folder into an editable layout."
@@ -597,6 +1013,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--files-file",
         help="Text file containing one filename or label=filename per line.",
+    )
+    parser.add_argument(
+        "--group-layout-file",
+        help="Path to a grouped composite layout file with [group NAME] and [figure] rows definitions.",
     )
     parser.add_argument(
         "--order-mode",
@@ -681,25 +1101,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--auto-height cannot be used together with --ai-height-mm.")
     if args.name and ("/" in args.name or "\\" in args.name):
         parser.error("--name should be a base filename, not a path.")
+    if args.group_layout_file and (args.files or args.files_file or args.layout):
+        parser.error("--group-layout-file cannot be combined with --files, --files-file, or --layout.")
 
-    manual_items = parse_manual_selection(folder, args.files, args.files_file)
-    if manual_items is not None:
-        labeled_paths = manual_items
+    grouped_groups: list[GroupSpec] | None = None
+    grouped_rows: list[list[str]] | None = None
+    figures: list[FigureSpec] | None = None
+    layout: list[int] | None = None
+
+    if args.group_layout_file:
+        grouped_groups, grouped_rows = parse_group_layout_file(
+            folder,
+            Path(args.group_layout_file).expanduser().resolve(),
+        )
     else:
-        labeled_paths = assign_default_labels(discover_paths(folder))
+        manual_items = parse_manual_selection(folder, args.files, args.files_file)
+        if manual_items is not None:
+            labeled_paths = manual_items
+        else:
+            labeled_paths = assign_default_labels(discover_paths(folder))
 
-    if not labeled_paths:
-        parser.error(f"No supported figure files found in {folder}")
+        if not labeled_paths:
+            parser.error(f"No supported figure files found in {folder}")
 
-    figures = build_figures(labeled_paths)
-    if manual_items is None and args.order_mode == "smart":
-        figures = smart_reorder(figures)
-        figures = [
-            FigureSpec(path=figure.path, label=label_for_index(index), width=figure.width, height=figure.height)
-            for index, figure in enumerate(figures)
-        ]
+        figures = build_figures(labeled_paths)
+        if manual_items is None and args.order_mode == "smart":
+            figures = smart_reorder(figures)
+            figures = [
+                FigureSpec(path=figure.path, label=label_for_index(index), width=figure.width, height=figure.height)
+                for index, figure in enumerate(figures)
+            ]
 
-    layout = parse_layout(args.layout, len(figures), args.layout_mode, figures)
+        layout = parse_layout(args.layout, len(figures), args.layout_mode, figures)
+
     if args.ai_width_mm is not None and args.ai_height_mm is not None:
         artboard_width = mm_to_pt(args.ai_width_mm)
         artboard_height = mm_to_pt(args.ai_height_mm)
@@ -709,13 +1143,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             artboard_width = mm_to_pt(args.ai_width_mm)
 
     if args.auto_height:
-        artboard_height = auto_height_for_layout(
-            figures=figures,
-            layout=layout,
-            artboard_width=artboard_width,
-            margin=args.margin,
-            gap=args.gap,
-        )
+        if grouped_groups is not None and grouped_rows is not None:
+            artboard_height = auto_height_for_groups(
+                groups=grouped_groups,
+                outer_rows=grouped_rows,
+                artboard_width=artboard_width,
+                margin=args.margin,
+                gap=args.gap,
+            )
+        else:
+            assert figures is not None and layout is not None
+            artboard_height = auto_height_for_layout(
+                figures=figures,
+                layout=layout,
+                artboard_width=artboard_width,
+                margin=args.margin,
+                gap=args.gap,
+            )
 
     default_base = args.name if args.name else "paneljet"
     output_jsx = (
@@ -731,7 +1175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_ai = None
 
     print(f"Scanned folder: {folder}")
-    print_summary(figures, layout, args.layout_mode if not args.layout else "manual", output_jsx, save_ai)
+    if grouped_groups is not None and grouped_rows is not None:
+        print_group_summary(grouped_groups, grouped_rows, output_jsx, save_ai)
+    else:
+        assert figures is not None and layout is not None
+        print_summary(figures, layout, args.layout_mode if not args.layout else "manual", output_jsx, save_ai)
     print(
         "Artboard: "
         f"{artboard_width:.2f} pt x {artboard_height:.2f} pt "
@@ -745,18 +1193,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     if save_ai:
         save_ai.parent.mkdir(parents=True, exist_ok=True)
 
-    jsx = generate_jsx(
-        figures=figures,
-        layout=layout,
-        artboard_width=artboard_width,
-        artboard_height=artboard_height,
-        margin=args.margin,
-        gap=args.gap,
-        add_labels=not args.no_labels,
-        label_size=args.label_size,
-        document_name=folder.name,
-        save_ai=save_ai,
-    )
+    if grouped_groups is not None and grouped_rows is not None:
+        jsx = generate_grouped_jsx(
+            groups=grouped_groups,
+            outer_rows=grouped_rows,
+            artboard_width=artboard_width,
+            artboard_height=artboard_height,
+            margin=args.margin,
+            gap=args.gap,
+            add_labels=not args.no_labels,
+            label_size=args.label_size,
+            document_name=folder.name,
+            save_ai=save_ai,
+        )
+    else:
+        assert figures is not None and layout is not None
+        jsx = generate_jsx(
+            figures=figures,
+            layout=layout,
+            artboard_width=artboard_width,
+            artboard_height=artboard_height,
+            margin=args.margin,
+            gap=args.gap,
+            add_labels=not args.no_labels,
+            label_size=args.label_size,
+            document_name=folder.name,
+            save_ai=save_ai,
+        )
     output_jsx.write_text(jsx, encoding="utf-8")
 
     if args.run_illustrator:
