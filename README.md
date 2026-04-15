@@ -51,7 +51,7 @@ paneljet \
   --order-mode smart \
   --layout-mode smart \
   --name Figure3_layout \
-  --ai-width-mm 260 \
+  --ai-width-mm 180 \
   --auto-height \
   --run-illustrator
 ```
@@ -68,6 +68,19 @@ This writes:
 The demo collage above uses the author's two very fluffy ragdoll cats as sample data: Heli (male, 9.5 kg) and Huajuan (female, 4.5 kg).
 
 ## Common workflows
+
+For many SCI-style journal figures, a practical default is `180 mm` width for a double-column figure. As a reference point, Nature’s figure guide uses `89 mm` for single-column and `183 mm` for double-column figures.
+
+Practical width guide:
+
+- `89-90 mm`: single-column figure
+- `120-136 mm`: intermediate or 1.5-column figure
+- `180-183 mm`: double-column figure
+
+In practice:
+
+- use fixed width plus fixed height when you already know the exact target figure box
+- use fixed width plus `--auto-height` when you want panel widths to stay consistent but do not want large blank space above and below the packed figure
 
 ### 1. Auto-scan a folder and preview layout
 
@@ -100,7 +113,7 @@ paneljet \
   /path/to/figure_folder \
   --order-mode smart \
   --layout-mode smart \
-  --ai-width-mm 210 \
+  --ai-width-mm 180 \
   --auto-height \
   --run-illustrator
 ```
@@ -141,7 +154,7 @@ That means the same core tool can be used in three ways:
 
 Example natural-language intents:
 
-- "Pack this folder into an Illustrator figure and make it 260 by 180 mm."
+- "Pack this folder into an Illustrator figure and make it 180 mm wide with auto height."
 - "Arrange these files as A-H and open Illustrator."
 - "Preview the smart layout before generating the AI file."
 
@@ -170,9 +183,16 @@ Example natural-language intents:
 - `--artboard-size A4|A3|letter|WxH`
 - `--landscape`
 - `--ai-width-mm 260 --ai-height-mm 180`
-- `--ai-width-mm 210 --auto-height`
+- `--ai-width-mm 180 --auto-height`
+
+Recommended journal-style defaults:
+
+- single-column: `--ai-width-mm 89 --auto-height`
+- double-column: `--ai-width-mm 180 --auto-height`
 
 `--auto-height` keeps the chosen artboard width and automatically shrinks the artboard height to fit the packed panels with more appropriate top and bottom whitespace.
+
+If you already know the exact final figure box required by a journal, use both `--ai-width-mm` and `--ai-height-mm` instead of `--auto-height`.
 
 ### Labels and spacing
 
