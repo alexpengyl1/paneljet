@@ -436,6 +436,14 @@ main();
 def detect_illustrator_app(preferred: str | None) -> str:
     if preferred:
         return preferred
+    for candidate in ("Illustrator", "Adobe Illustrator"):
+        result = subprocess.run(
+            ["osascript", "-e", f'tell application "{candidate}" to get version'],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return candidate
     return "Adobe Illustrator"
 
 
@@ -541,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--illustrator-app",
-        help="Illustrator app name for AppleScript, for example 'Adobe Illustrator'.",
+        help="Illustrator app name for AppleScript, for example 'Illustrator' or 'Adobe Illustrator'.",
     )
     return parser
 
