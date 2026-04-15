@@ -61,6 +61,12 @@ This writes:
 - `/path/to/figure_folder/Figure3_layout.jsx`
 - `/path/to/figure_folder/Figure3_layout.ai`
 
+## Demo
+
+![PanelJet demo collage](./docs/assets/paneljet-demo-cats.png)
+
+The demo collage above uses the author's two very fluffy ragdoll cats as sample data: Heli (male, 9 kg) and Huajuan (female, 4.5 kg).
+
 ## Common workflows
 
 ### 1. Auto-scan a folder and preview layout
