@@ -260,6 +260,10 @@ What PanelJet does in this case:
 - within that row, image widths are adjusted automatically from each image's aspect ratio
 - this makes the grouped block visually tighter than forcing every small panel to share the same width
 
+Example output:
+
+![Composite 16-image example](./docs/assets/cat16-composite-equalheight.png)
+
 ## Natural language with Codex and Claude Code
 
 This repository includes both:
