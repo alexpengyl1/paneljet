@@ -491,20 +491,27 @@ def compute_uniform_row_metrics(
     return base_cell_width, row_heights, rows
 
 
-def layout_height_factor(figures: Sequence[FigureSpec], layout: Sequence[int]) -> float:
-    rows = chunked(figures, layout)
-    return sum(max(1.0 / figure.aspect_ratio for figure in row_figures) for row_figures in rows)
-
-
-def group_aspect_ratio(group: GroupSpec, gap: float) -> float:
-    height_factor = layout_height_factor(group.figures, group.layout)
-    cols = max(group.layout)
-    rows = len(group.layout)
-    width = cols + (gap * max(0, cols - 1))
-    height = height_factor + (gap * max(0, rows - 1))
-    if height <= 0:
+def composite_group_coefficients(group: GroupSpec, gap: float) -> tuple[float, float]:
+    rows = chunked(group.figures, group.layout)
+    alpha = 0.0
+    beta = gap * max(0, len(rows) - 1)
+    for row_figures in rows:
+        aspect_sum = sum(figure.aspect_ratio for figure in row_figures)
+        if aspect_sum <= 0:
+            raise ValueError(f"Group {group.name} has invalid image aspect ratios.")
+        alpha += 1.0 / aspect_sum
+        beta -= gap * max(0, len(row_figures) - 1) / aspect_sum
+    if alpha <= 0:
         raise ValueError(f"Group {group.name} has invalid geometry.")
-    return width / height
+    return alpha, beta
+
+
+def group_width_for_height(group: GroupSpec, block_height: float, gap: float) -> float:
+    alpha, beta = composite_group_coefficients(group, gap)
+    width = (block_height - beta) / alpha
+    if width <= 0:
+        raise ValueError(f"Group {group.name} cannot fit inside the requested height.")
+    return width
 
 
 def scaled_group_placements(
@@ -518,37 +525,29 @@ def scaled_group_placements(
     row_count = len(rows)
     if row_count <= 0:
         return []
-    available_content_height = block_height - (gap * max(0, row_count - 1))
-    if available_content_height <= 0:
-        raise ValueError(f"Group {group.name} has no vertical space after gaps.")
-
-    height_factor = layout_height_factor(group.figures, group.layout)
-    cell_width = available_content_height / height_factor
-    row_heights = [
-        max(cell_width / figure.aspect_ratio for figure in row_figures)
-        for row_figures in rows
-    ]
-    max_cols = max(group.layout)
-    total_width = (max_cols * cell_width) + (gap * max(0, max_cols - 1))
+    total_width = group_width_for_height(group, block_height, gap)
     placements: list[PlacementSpec] = []
     current_top = top
-    for row_figures, row_height in zip(rows, row_heights):
-        row_width = (len(row_figures) * cell_width) + (gap * max(0, len(row_figures) - 1))
-        row_left = left + ((total_width - row_width) / 2.0)
-        for col_index, figure in enumerate(row_figures):
-            figure_height = cell_width / figure.aspect_ratio
-            cell_left = row_left + (col_index * (cell_width + gap))
+    for row_figures in rows:
+        aspect_sum = sum(figure.aspect_ratio for figure in row_figures)
+        row_height = (total_width - (gap * max(0, len(row_figures) - 1))) / aspect_sum
+        if row_height <= 0:
+            raise ValueError(f"Group {group.name} has no usable row height.")
+        current_left = left
+        for figure in row_figures:
+            figure_width = row_height * figure.aspect_ratio
             placements.append(
                 PlacementSpec(
                     label=figure.label,
                     file=str(figure.path.resolve()),
-                    cell_left=round(cell_left, 2),
+                    cell_left=round(current_left, 2),
                     cell_top=round(current_top, 2),
-                    cell_width=round(cell_width, 2),
-                    cell_height=round(figure_height, 2),
+                    cell_width=round(figure_width, 2),
+                    cell_height=round(row_height, 2),
                     show_label=False,
                 )
             )
+            current_left += figure_width + gap
         current_top -= row_height + gap
     return placements
 
@@ -565,19 +564,24 @@ def compute_group_row_heights(
         raise ValueError("Margin leaves no usable artboard width.")
     group_map = {group.name: group for group in groups}
     row_heights: list[float] = []
-    aspects: dict[str, float] = {}
+    widths_by_row: dict[str, float] = {}
+    coefficients = {group.name: composite_group_coefficients(group, gap) for group in groups}
     for group in groups:
-        aspects[group.name] = group_aspect_ratio(group, gap)
+        if group.name not in group_map:
+            raise ValueError(f"Unknown group {group.name}")
     for row in outer_rows:
-        aspect_sum = sum(aspects[name] for name in row)
         available_width = inner_width - (gap * max(0, len(row) - 1))
         if available_width <= 0:
             raise ValueError("Gap leaves no usable row width.")
-        row_heights.append(available_width / aspect_sum)
+        row_scale = sum(1.0 / coefficients[name][0] for name in row)
+        row_offset = sum(coefficients[name][1] / coefficients[name][0] for name in row)
+        row_height = (available_width + row_offset) / row_scale
+        row_heights.append(row_height)
         for name in row:
             if name not in group_map:
                 raise ValueError(f"Unknown group in row: {name}")
-    return row_heights, aspects
+            widths_by_row[name] = group_width_for_height(group_map[name], row_height, gap)
+    return row_heights, widths_by_row
 
 
 def auto_height_for_groups(
@@ -599,17 +603,15 @@ def group_label_placements(
     margin: float,
     gap: float,
 ) -> list[PlacementSpec]:
-    row_heights, aspects = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
+    row_heights, group_widths = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
     inner_height = artboard_height - (2 * margin)
     content_height = sum(row_heights) + (gap * max(0, len(row_heights) - 1))
-    group_map = {group.name: group for group in groups}
-    _ = group_map
     placements: list[PlacementSpec] = []
     current_top = artboard_height - margin - ((inner_height - content_height) / 2.0)
     for row, row_height in zip(outer_rows, row_heights):
         current_left = margin
         for group_name in row:
-            group_width = row_height * aspects[group_name]
+            group_width = group_widths[group_name]
             placements.append(
                 PlacementSpec(
                     label=group_name,
@@ -887,7 +889,7 @@ def generate_grouped_jsx(
     document_name: str,
     save_ai: Path | None,
 ) -> str:
-    row_heights, aspects = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
+    row_heights, group_widths = compute_group_row_heights(groups, outer_rows, artboard_width, margin, gap)
     inner_height = artboard_height - (2 * margin)
     content_height = sum(row_heights) + (gap * max(0, len(row_heights) - 1))
     if content_height > inner_height:
@@ -900,7 +902,7 @@ def generate_grouped_jsx(
     for row, row_height in zip(outer_rows, row_heights):
         current_left = current_left_base
         for group_name in row:
-            group_width = row_height * aspects[group_name]
+            group_width = group_widths[group_name]
             placements.extend(
                 scaled_group_placements(
                     group=group_map[group_name],

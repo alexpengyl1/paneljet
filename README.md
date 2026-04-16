@@ -205,6 +205,60 @@ Notes for composite layout:
 - `rows = A,B ; C` means first row `A` and `B`, second row `C`
 - groups in the same row are equal-height blocks; their widths are distributed automatically from their internal layout geometry
 - group labels are drawn once per group at the top-left of each block; inner panels inside the group do not receive separate letter labels
+- inside each group, images are read individually and their aspect ratios are used during layout
+- panels in the same inner row are scaled to the same height, while widths vary automatically from the image aspect ratios
+- this keeps grouped layouts tighter and reduces unnecessary blank space inside a `2,2` or `3,3,3` block
+
+### Composite example: 16 images as four grouped sub-figures
+
+One practical pattern is a figure built from 16 images arranged as four grouped sub-figures:
+
+- outer layout: `A,B ; C,D`
+- inner layout for every group: `2,2`
+- rendered labels: only `A`, `B`, `C`, and `D`
+- filenames such as `A1`, `A2`, `B3`, `D4` are only used for configuration
+
+Example layout file:
+
+```text
+[group A]
+files = A1.jpg,A2.jpg,A3.jpg,A4.jpg
+layout = 2,2
+
+[group B]
+files = B1.jpg,B2.jpg,B3.jpg,B4.jpg
+layout = 2,2
+
+[group C]
+files = C1.jpg,C2.jpg,C3.jpg,C4.jpg
+layout = 2,2
+
+[group D]
+files = D1.jpg,D2.jpg,D3.jpg,D4.jpg
+layout = 2,2
+
+[figure]
+rows = A,B ; C,D
+```
+
+Run it like this:
+
+```bash
+paneljet \
+  /path/to/cat16_assets \
+  --group-layout-file /path/to/cat16_assets/composite_layout.txt \
+  --ai-width-mm 180 \
+  --auto-height \
+  --run-illustrator
+```
+
+What PanelJet does in this case:
+
+- unsupported files such as `HEIC` should first be converted to a supported input format such as `jpg`
+- every image in `A1` through `D4` is measured individually
+- within each group row, the images are resized so that the row height is consistent
+- within that row, image widths are adjusted automatically from each image's aspect ratio
+- this makes the grouped block visually tighter than forcing every small panel to share the same width
 
 ## Natural language with Codex and Claude Code
 
