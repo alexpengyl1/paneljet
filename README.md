@@ -62,11 +62,21 @@ This writes:
 - `/path/to/figure_folder/Figure3_layout.jsx`
 - `/path/to/figure_folder/Figure3_layout.ai`
 
-## Demo
+## Examples
 
-![PanelJet demo collage](./docs/assets/paneljet-demo-cats.png)
+PanelJet supports two different figure-building workflows. The two example images below are meant to show the visual difference clearly.
 
-The demo collage above uses the author's two very fluffy ragdoll cats as sample data: Heli (male, 9.5 kg) and Huajuan (female, 4.5 kg).
+### Basic layout example
+
+![PanelJet basic layout example](./docs/assets/paneljet-demo-cats.png)
+
+This example shows the `Basic layout` mode:
+
+- all images are treated as one flat panel list
+- PanelJet decides how to distribute them into rows such as `3,3,2` or `2,2,1`
+- this is the right mode when a figure is just "many panels in one figure" and you do not need higher-level grouped blocks
+
+The cat collage above uses the author's two very fluffy ragdoll cats as sample data: Heli (male, 9.5 kg) and Huajuan (female, 4.5 kg).
 
 ## Layout modes
 
@@ -77,7 +87,20 @@ PanelJet now supports two complementary layout modes:
 
 Use basic layout for most standard manuscript figures. Use composite layout when a figure contains sub-figures that should stay together.
 
+Quick comparison:
+
+| Mode | Best for | Input style | Labels shown | Typical result |
+| --- | --- | --- | --- | --- |
+| `Basic layout` | ordinary multi-panel figures | one flat file list | panel-level labels such as `A/B/C/...` | rows of panels packed directly |
+| `Composite layout` | hierarchical figures with grouped blocks | groups such as `A1-A4`, `B1-B4`, `C1-C9` | group-level labels such as `A/B/C` | grouped sub-figures packed into an outer layout |
+
 ## Basic layout
+
+Choose this mode when:
+
+- all files belong to one figure without subgroup structure
+- you want automatic row packing from a single panel list
+- labels should appear on individual panels
 
 For many SCI-style journal figures, a practical default is `180 mm` width for a double-column figure. As a reference point, Nature’s figure guide uses `89 mm` for single-column and `183 mm` for double-column figures.
 
@@ -152,6 +175,13 @@ paneljet \
 ## Composite layout
 
 Composite layout is meant for figures that have meaningful grouped sub-figures.
+
+Choose this mode when:
+
+- one figure contains multiple logical sub-figures
+- each sub-figure should keep its own internal arrangement
+- only the outer groups should be labeled in the final figure
+- examples such as `A,B ; C` or `A,B ; C,D` match the story you want to tell
 
 Example target structure:
 
@@ -263,6 +293,15 @@ What PanelJet does in this case:
 Example output:
 
 ![Composite 16-image example](./docs/assets/cat16-composite-equalheight.png)
+
+What this image is showing:
+
+- the full figure is split into four higher-level groups: `A`, `B`, `C`, and `D`
+- each group contains four images arranged internally as `2,2`
+- the final figure is arranged externally as `A,B ; C,D`
+- only the outer labels `A/B/C/D` are shown
+- within each inner row, images share the same height while their widths change according to each image's aspect ratio
+- this is why the grouped blocks look tighter and more balanced than a naive fixed-cell grid
 
 ## Natural language with Codex and Claude Code
 
