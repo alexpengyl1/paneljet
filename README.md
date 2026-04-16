@@ -166,6 +166,7 @@ In this mode:
 - groups in the same outer row are scaled to the same visual height
 - the overall figure can still use `--ai-width-mm` and `--auto-height`
 - the original basic layout mode still works unchanged
+- group member filenames such as `A1`, `A2`, `C7` are only used for configuration; the rendered figure shows one label per group such as `A`, `B`, and `C`
 
 Create a layout file such as `composite_layout.txt`:
 
@@ -203,6 +204,7 @@ Notes for composite layout:
 - every group listed in the file must appear exactly once in `[figure] rows = ...`
 - `rows = A,B ; C` means first row `A` and `B`, second row `C`
 - groups in the same row are equal-height blocks; their widths are distributed automatically from their internal layout geometry
+- group labels are drawn once per group at the top-left of each block; inner panels inside the group do not receive separate letter labels
 
 ## Natural language with Codex and Claude Code
 
